@@ -63,48 +63,66 @@ if check_password():
             MODELO = "gemini-3-flash-preview"
             url = f"https://generativelanguage.googleapis.com/v1beta/models/{MODELO}:generateContent?key={api_key}"
 
-            for i, arq in enumerate(arquivos):
+        for i, arq in enumerate(arquivos):
                 status_msg.info(f"Analisando: {arq.name}...")
                 img_b64 = codificar_imagem(arq)
                 
+                # Payload otimizado para evitar bloqueios
                 payload = {
-                    "contents": [{"parts": [
-                        {"text": f"Extraia em uma linha separada por pipe: VALOR|LOCAL|CNPJ|DATA|CATEGORIA|STATUS|MOTIVO. Limite R$ {valor_max}, 90 dias. Categorias: Alimentação, Transporte, Hospedagem, Suprimentos, Outros."},
-                        {"inline_data": {"mime_type": "image/jpeg", "data": img_b64}}
-                    ]}],
-                    "safetySettings": [{"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}]
+                    "contents": [{
+                        "parts": [
+                            {"text": f"Extraia os dados desta nota fiscal no formato exato: VALOR|LOCAL|CNPJ|DATA|CATEGORIA|STATUS|MOTIVO. Regras: Limite R$ {valor_max}, categorizar em Alimentação, Transporte, Hospedagem ou Outros. Se o valor for maior que o limite, STATUS é REPROVADO."},
+                            {"inline_data": {"mime_type": "image/jpeg", "data": img_b64}}
+                        ]
+                    }],
+                    "generationConfig": {
+                        "temperature": 0.1,  # Menos criatividade, mais precisão
+                        "topP": 1,
+                        "maxOutputTokens": 256
+                    },
+                    "safetySettings": [
+                        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+                        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+                        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+                        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
+                    ]
                 }
 
-                # --- MECANISMO DE RETRY ---
                 sucesso_nota = False
                 for tentativa in range(3):
                     try:
-                        response = requests.post(url, json=payload, timeout=45)
+                        response = requests.post(url, json=payload, timeout=50)
                         res_json = response.json()
                         
+                        # LOG DE DEBUG (Apenas para o programador ver no terminal do Streamlit)
+                        if 'error' in res_json:
+                             print(f"Erro na tentativa {tentativa}: {res_json['error']}")
+
                         if 'candidates' in res_json and len(res_json['candidates']) > 0:
-                            texto = res_json['candidates'][0]['content']['parts'][0]['text'].strip()
-                            texto = texto.replace('`', '').replace('markdown', '').strip()
-                            cols = texto.split("|")
-                            
-                            if len(cols) >= 6:
-                                # Limpeza do valor numérico
-                                v_str = re.sub(r'[^\d,.]', '', cols[0]).replace(',', '.')
-                                resultados.append({
-                                    "Arquivo": arq.name,
-                                    "Valor (R$)": float(v_str) if v_str else 0.0,
-                                    "Local": cols[1].strip(),
-                                    "CNPJ": cols[2].strip(),
-                                    "Data": cols[3].strip(),
-                                    "Categoria": cols[4].strip(),
-                                    "Status": cols[5].strip().upper(),
-                                    "Justificativa": cols[6].strip() if len(cols) > 6 else ""
-                                })
-                                sucesso_nota = True
-                                break
-                        time.sleep(2)
-                    except Exception:
-                        time.sleep(2)
+                            part = res_json['candidates'][0]['content']['parts'][0]
+                            if 'text' in part:
+                                texto = part['text'].strip()
+                                texto = texto.replace('`', '').replace('markdown', '').strip()
+                                cols = texto.split("|")
+                                
+                                if len(cols) >= 6:
+                                    v_str = re.sub(r'[^\d,.]', '', cols[0]).replace(',', '.')
+                                    resultados.append({
+                                        "Arquivo": arq.name,
+                                        "Valor (R$)": float(v_str) if v_str else 0.0,
+                                        "Local": cols[1].strip(),
+                                        "CNPJ": cols[2].strip(),
+                                        "Data": cols[3].strip(),
+                                        "Categoria": cols[4].strip(),
+                                        "Status": cols[5].strip().upper(),
+                                        "Justificativa": cols[6].strip() if len(cols) > 6 else ""
+                                    })
+                                    sucesso_nota = True
+                                    break
+                        time.sleep(3) # Aumentado o tempo de espera entre tentativas
+                    except Exception as e:
+                        print(f"Erro de conexão: {e}")
+                        time.sleep(3)
                 
                 if not sucesso_nota:
                     resultados.append({"Arquivo": arq.name, "Status": "FALHA API", "Valor (R$)": 0.0, "Justificativa": "Sem resposta após 3 tentativas"})
@@ -182,3 +200,4 @@ if check_password():
                 
                 csv = df.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
                 st.download_button("📥 Baixar Relatório Completo", csv, f"auditoria_{datetime.now().strftime('%d%m%Y')}.csv", "text/csv")
+
