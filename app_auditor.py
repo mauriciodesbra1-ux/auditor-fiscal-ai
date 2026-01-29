@@ -29,17 +29,15 @@ if check_password():
     st.title("🛡️ AI Auditor Pro: Inteligência Fiscal")
     st.markdown("---")
 
+    # Estilo CSS para métricas
     st.markdown("""
         <style>
         .stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
-        .stInfo { border-left: 5px solid #007bff; background-color: #e7f3ff; }
         </style>
         """, unsafe_allow_html=True)
 
-    if "GEMINI_KEY" in st.secrets:
-        api_key = st.secrets["GEMINI_KEY"]
-    else:
-        api_key = st.sidebar.text_input("Gemini API Key", type="password")
+    # --- SEGURANÇA: SECRETS ---
+    api_key = st.secrets.get("GEMINI_KEY", st.sidebar.text_input("Gemini API Key", type="password"))
 
     valor_max = st.sidebar.number_input("Limite de Reembolso (R$)", value=250.0)
     arquivos = st.file_uploader("📂 Upload das Notas", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
@@ -64,16 +62,11 @@ if check_password():
                 
                 payload = {
                     "contents": [{"parts": [
-                        {"text": f"Extraia em uma linha: VALOR|LOCAL|CNPJ|DATA|CATEGORIA|STATUS|MOTIVO. Limite R$ {valor_max}. Categorias: Alimentação, Transporte, Hospedagem, Outros."},
+                        {"text": f"Extraia os dados no formato: VALOR|LOCAL|CNPJ|DATA|CATEGORIA|STATUS|MOTIVO. Regras: Limite R$ {valor_max}. Categorias: Alimentação, Transporte, Hospedagem, Outros."},
                         {"inline_data": {"mime_type": "image/jpeg", "data": img_b64}}
                     ]}],
                     "generationConfig": {"temperature": 0.1},
-                    "safetySettings": [
-                        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
-                        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
-                        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
-                        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}
-                    ]
+                    "safetySettings": [{"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}]
                 }
 
                 sucesso_nota = False
@@ -81,11 +74,9 @@ if check_password():
                     try:
                         response = requests.post(url, json=payload, timeout=50)
                         res_json = response.json()
-                        
-                        if 'candidates' in res_json and len(res_json['candidates']) > 0:
+                        if 'candidates' in res_json:
                             texto = res_json['candidates'][0]['content']['parts'][0]['text'].strip()
-                            texto = texto.replace('`', '').replace('markdown', '').strip()
-                            cols = texto.split("|")
+                            cols = texto.replace('`', '').replace('markdown', '').strip().split("|")
                             
                             if len(cols) >= 6:
                                 v_str = re.sub(r'[^\d,.]', '', cols[0]).replace(',', '.')
@@ -101,12 +92,12 @@ if check_password():
                                 })
                                 sucesso_nota = True
                                 break
-                        time.sleep(3)
-                    except Exception:
-                        time.sleep(3)
+                        time.sleep(2)
+                    except:
+                        time.sleep(2)
                 
                 if not sucesso_nota:
-                    resultados.append({"Arquivo": arq.name, "Status": "FALHA API", "Valor (R$)": 0.0, "Justificativa": "Sem resposta após 3 tentativas"})
+                    resultados.append({"Arquivo": arq.name, "Status": "FALHA", "Valor (R$)": 0.0, "Categoria": "Outros"})
                 
                 progresso.progress((i + 1) / len(arquivos))
 
@@ -114,33 +105,38 @@ if check_password():
 
             if resultados:
                 df = pd.DataFrame(resultados)
+                
+                # --- TRATAMENTO DE ERROS DE DADOS ---
                 df['Valor (R$)'] = pd.to_numeric(df['Valor (R$)'], errors='coerce').fillna(0.0)
-                df['Status'] = df['Status'].str.upper().str.strip()
+                if 'Status' not in df.columns: df['Status'] = 'FALHA'
+                if 'Categoria' not in df.columns: df['Categoria'] = 'Outros'
+                df['Status'] = df['Status'].str.strip().str.upper()
 
+                # --- DASHBOARD ---
                 st.markdown("### 📊 Visão Geral")
                 c1, c2, c3 = st.columns(3)
-                val_aprovado = df[df['Status']=='APROVADO']['Valor (R$)'].sum()
+                aprovados = df[df['Status'] == 'APROVADO']['Valor (R$)'].sum()
                 
                 c1.metric("Notas", len(df))
-                c2.metric("Aprovado", f"R$ {val_aprovado:,.2f}")
-                c3.metric("Recusado", f"R$ {df['Valor (R$)'].sum() - val_aprovado:,.2f}")
+                c2.metric("Aprovado", f"R$ {aprovados:,.2f}")
+                c3.metric("Recusado/Falha", f"R$ {df['Valor (R$)'].sum() - aprovados:,.2f}")
 
+                # Gráficos com tratamento de erro
                 col1, col2 = st.columns(2)
-                cores = {'APROVADO': '#2ecc71', 'REPROVADO': '#e74c3c', 'FALHA API': '#95a5a6'}
+                cores = {'APROVADO': '#2ecc71', 'REPROVADO': '#e74c3c', 'FALHA': '#95a5a6'}
+                
                 with col1:
-                    st.plotly_chart(px.bar(df, x='Categoria', y='Valor (R$)', color='Status', color_discrete_map=cores), use_container_width=True)
+                    try:
+                        st.plotly_chart(px.bar(df, x='Categoria', y='Valor (R$)', color='Status', color_discrete_map=cores, title="Gastos por Categoria"), use_container_width=True)
+                    except Exception as e:
+                        st.warning("Não há dados suficientes para o gráfico de barras.")
+
                 with col2:
-                    st.plotly_chart(px.pie(df, names='Status', values='Valor (R$)', hole=0.4, color='Status', color_discrete_map=cores), use_container_width=True)
+                    try:
+                        st.plotly_chart(px.pie(df, names='Status', values='Valor (R$)', hole=0.4, color='Status', color_discrete_map=cores, title="Proporção de Status"), use_container_width=True)
+                    except Exception as e:
+                        st.warning("Não há dados suficientes para o gráfico de pizza.")
 
                 st.markdown("---")
-                st.subheader("🤖 Diagnóstico Estratégico")
-                try:
-                    resumo_ia = df[['Categoria', 'Valor (R$)', 'Status']].to_string()
-                    prompt_an = f"Analise brevemente estes dados de auditoria e dê uma dica financeira: {resumo_ia}"
-                    res_an = requests.post(url, json={"contents": [{"parts": [{"text": prompt_an}]}]}).json()
-                    st.info(res_an['candidates'][0]['content']['parts'][0]['text'])
-                except:
-                    st.warning("Diagnóstico indisponível.")
-
                 st.dataframe(df, use_container_width=True)
                 st.download_button("📥 Baixar Excel", df.to_csv(index=False, sep=';').encode('utf-8-sig'), "relatorio.csv")
