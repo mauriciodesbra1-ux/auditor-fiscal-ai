@@ -11,12 +11,13 @@ from datetime import datetime
 st.set_page_config(page_title="Auditor AI Pro", layout="wide", page_icon="🛡️")
 
 # --- ESTILO CSS PARA MELHORAR O VISUAL ---
+# --- ESTILO CSS PARA MELHORAR O VISUAL ---
 st.markdown("""
     <style>
     .main { background-color: #f5f7f9; }
     .stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
     </style>
-    """, unsafe_allow_status_code=True)
+    """, unsafe_allow_html=True)
 
 st.title("🛡️ AI Auditor Pro: Dashboard de Inteligência")
 st.markdown("---")
@@ -139,3 +140,4 @@ if st.button("🚀 Iniciar Auditoria Estratégica") and arquivos:
             # Download
             csv = df.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
             st.download_button("📥 Baixar Planilha para Excel", csv, f"auditoria_{datetime.now().strftime('%d%m%y')}.csv", "text/csv")
+
