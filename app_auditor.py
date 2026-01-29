@@ -17,6 +17,7 @@ def check_password():
         user = st.text_input("Usuário")
         pw = st.text_input("Senha", type="password")
         if st.button("Entrar"):
+            # Podes alterar o utilizador e senha aqui
             if user == "admin" and pw == "auditor2026":
                 st.session_state["password_correct"] = True
                 st.rerun()
@@ -30,7 +31,7 @@ if check_password():
     st.title("🛡️ AI Auditor Pro: Inteligência Fiscal")
     st.markdown("---")
 
-    # CSS para Estilização
+    # Estilização CSS
     st.markdown("""
         <style>
         .stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
@@ -42,7 +43,7 @@ if check_password():
     if "GEMINI_KEY" in st.secrets:
         api_key = st.secrets["GEMINI_KEY"]
     else:
-        api_key = st.sidebar.text_input("Gemini API Key", type="password")
+        api_key = st.sidebar.text_input("Gemini API Key", type="password", help="Chave não detetada nos Secrets.")
 
     # Configurações na Sidebar
     valor_max = st.sidebar.number_input("Limite de Reembolso (R$)", value=250.0)
@@ -53,7 +54,7 @@ if check_password():
 
     if st.button("🚀 Iniciar Auditoria Estratégica") and arquivos:
         if not api_key:
-            st.error("⚠️ Configure a API Key!")
+            st.error("⚠️ Configure a API Key nos Secrets do Streamlit!")
         else:
             resultados = []
             progresso = st.progress(0)
@@ -68,7 +69,7 @@ if check_password():
                 
                 payload = {
                     "contents": [{"parts": [
-                        {"text": f"Extraia em uma linha: VALOR|LOCAL|CNPJ|DATA|CATEGORIA|STATUS|MOTIVO. Limite R$ {valor_max}, 90 dias. Categorias: Alimentação, Transporte, Hospedagem, Suprimentos, Outros."},
+                        {"text": f"Extraia em uma linha separada por pipe: VALOR|LOCAL|CNPJ|DATA|CATEGORIA|STATUS|MOTIVO. Limite R$ {valor_max}, 90 dias. Categorias: Alimentação, Transporte, Hospedagem, Suprimentos, Outros."},
                         {"inline_data": {"mime_type": "image/jpeg", "data": img_b64}}
                     ]}],
                     "safetySettings": [{"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}]
@@ -87,6 +88,7 @@ if check_password():
                             cols = texto.split("|")
                             
                             if len(cols) >= 6:
+                                # Limpeza do valor numérico
                                 v_str = re.sub(r'[^\d,.]', '', cols[0]).replace(',', '.')
                                 resultados.append({
                                     "Arquivo": arq.name,
@@ -114,47 +116,69 @@ if check_password():
             if resultados:
                 df = pd.DataFrame(resultados)
                 
+                # --- LIMPEZA E VALIDAÇÃO PARA GRÁFICOS ---
+                df['Valor (R$)'] = pd.to_numeric(df['Valor (R$)'], errors='coerce').fillna(0.0)
+                for col in ['Categoria', 'Status']:
+                    if col not in df.columns: df[col] = "Não Informado"
+                df['Status'] = df['Status'].str.upper().str.strip()
+
                 # --- MÉTRICAS ---
                 st.markdown("### 📊 Visão Geral")
                 c1, c2, c3 = st.columns(3)
                 total_val = df['Valor (R$)'].sum()
-                val_aprovado = df[df['Status']=='APROVADO']['Valor (R$)'].sum()
+                val_aprovado = df[df['Status'] == 'APROVADO']['Valor (R$)'].sum()
                 val_recusado = total_val - val_aprovado
 
                 c1.metric("Notas Processadas", len(df))
                 c2.metric("Total Aprovado", f"R$ {val_aprovado:,.2f}")
-                c3.metric("Economia Estimada", f"R$ {val_recusado:,.2f}", delta_color="normal")
+                c3.metric("Economia Gerada", f"R$ {val_recusado:,.2f}")
 
-                # --- GRÁFICOS ---
+                # --- GRÁFICOS PROTEGIDOS ---
+                st.markdown("---")
                 col_g1, col_g2 = st.columns(2)
-                with col_g1:
-                    st.plotly_chart(px.bar(df, x='Categoria', y='Valor (R$)', color='Status', title="Gastos por Categoria", 
-                                         color_discrete_map={'APROVADO': '#2ecc71', 'REPROVADO': '#e74c3c'}), use_container_width=True)
-                with col_g2:
-                    st.plotly_chart(px.pie(df, names='Status', values='Valor (R$)', hole=0.4, title="Distribuição de Status",
-                                         color='Status', color_discrete_map={'APROVADO': '#2ecc71', 'REPROVADO': '#e74c3c'}), use_container_width=True)
+                
+                cores_map = {'APROVADO': '#2ecc71', 'REPROVADO': '#e74c3c', 'FALHA API': '#95a5a6'}
 
-                # --- NOVA SEÇÃO: ANÁLISE NARRATIVA IA ---
+                with col_g1:
+                    try:
+                        fig_bar = px.bar(df, x='Categoria', y='Valor (R$)', color='Status', 
+                                       title="Gastos por Categoria", barmode='group',
+                                       color_discrete_map=cores_map)
+                        st.plotly_chart(fig_bar, use_container_width=True)
+                    except:
+                        st.error("Erro ao gerar gráfico de barras.")
+
+                with col_g2:
+                    try:
+                        fig_pie = px.pie(df, names='Status', values='Valor (R$)', hole=0.4, 
+                                       title="Percentual por Status",
+                                       color='Status', color_discrete_map=cores_map)
+                        st.plotly_chart(fig_pie, use_container_width=True)
+                    except:
+                        st.error("Erro ao gerar gráfico de pizza.")
+
+                # --- ANÁLISE NARRATIVA IA ---
                 st.markdown("---")
                 st.subheader("🤖 Diagnóstico Estratégico do Auditor")
                 with st.spinner("IA analisando tendências..."):
                     resumo_ia = df[['Categoria', 'Valor (R$)', 'Status', 'Justificativa']].to_string()
                     prompt_narrativa = (
-                        f"Aja como um auditor sênior. Analise estes dados:\n{resumo_ia}\n\n"
-                        "Escreva um diagnóstico curto (3-4 frases) para o gerente financeiro. "
-                        "Destaque a categoria com mais gastos, o principal motivo de reprovação e uma recomendação prática."
+                        f"Aja como um auditor sênior. Analise estes dados de reembolsos:\n{resumo_ia}\n\n"
+                        "Escreva um diagnóstico curto (3 frases) para o gerente financeiro. "
+                        "Identifique o maior gasto, o motivo principal das reprovações e dê uma recomendação."
                     )
                     
                     try:
-                        res_narrativa = requests.post(url, json={"contents": [{"parts": [{"text": prompt_narrativa}]}]}).json()
+                        payload_an = {"contents": [{"parts": [{"text": prompt_narrativa}]}]}
+                        res_narrativa = requests.post(url, json=payload_an, timeout=30).json()
                         texto_analise = res_narrativa['candidates'][0]['content']['parts'][0]['text']
                         st.info(texto_analise)
                     except:
                         st.warning("O diagnóstico automático não pôde ser gerado.")
 
                 # --- TABELA E DOWNLOAD ---
-                st.markdown("### 📋 Detalhamento das Notas")
+                st.markdown("### 📋 Detalhes da Auditoria")
                 st.dataframe(df, use_container_width=True)
                 
                 csv = df.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
-                st.download_button("📥 Baixar Relatório Excel/CSV", csv, f"auditoria_{datetime.now().strftime('%d%m%Y')}.csv", "text/csv")
+                st.download_button("📥 Baixar Relatório Completo", csv, f"auditoria_{datetime.now().strftime('%d%m%Y')}.csv", "text/csv")
