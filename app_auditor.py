@@ -10,39 +10,31 @@ from datetime import datetime
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Auditor AI Pro", layout="wide", page_icon="🛡️")
 
-# --- SISTEMA DE LOGIN SIMPLES ---
+# --- SISTEMA DE LOGIN ---
 def check_password():
-    """Retorna True se o usuário inseriu a senha correta."""
-    def password_entered():
-        if st.session_state["username"] == "admin" and st.session_state["password"] == "auditor2026":
-            st.session_state["password_correct"] = True
-            del st.session_state["password"]  # remove senha do estado
-            del st.session_state["username"]
-        else:
-            st.session_state["password_correct"] = False
-
     if "password_correct" not in st.session_state:
         st.title("🔒 Acesso Restrito")
-        st.text_input("Usuário", on_change=password_entered, key="username")
-        st.text_input("Senha", type="password", on_change=password_entered, key="password")
+        user = st.text_input("Usuário")
+        pw = st.text_input("Senha", type="password")
+        if st.button("Entrar"):
+            if user == "admin" and pw == "auditor2026":
+                st.session_state["password_correct"] = True
+                st.rerun()
+            else:
+                st.error("Usuário ou senha incorretos.")
         return False
-    elif not st.session_state["password_correct"]:
-        st.text_input("Usuário", on_change=password_entered, key="username")
-        st.text_input("Senha", type="password", on_change=password_entered, key="password")
-        st.error("😕 Usuário ou senha incorretos.")
-        return False
-    else:
-        return True
+    return True
 
 if check_password():
-    # --- INTERFACE PRINCIPAL (SÓ APARECE APÓS LOGIN) ---
+    # --- INTERFACE PRINCIPAL ---
     st.title("🛡️ AI Auditor Pro: Inteligência Fiscal")
     st.markdown("---")
 
-    # CSS para melhorar visual
+    # CSS para Estilização
     st.markdown("""
         <style>
         .stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+        .stInfo { border-left: 5px solid #007bff; background-color: #e7f3ff; }
         </style>
         """, unsafe_allow_html=True)
 
@@ -52,6 +44,7 @@ if check_password():
     else:
         api_key = st.sidebar.text_input("Gemini API Key", type="password")
 
+    # Configurações na Sidebar
     valor_max = st.sidebar.number_input("Limite de Reembolso (R$)", value=250.0)
     arquivos = st.file_uploader("📂 Upload das Notas", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
 
@@ -81,11 +74,11 @@ if check_password():
                     "safetySettings": [{"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}]
                 }
 
-                # --- MECANISMO DE RETRY (TRATAMENTO DE FALHA API) ---
+                # --- MECANISMO DE RETRY ---
                 sucesso_nota = False
-                for tentativa in range(3): # Tenta até 3 vezes
+                for tentativa in range(3):
                     try:
-                        response = requests.post(url, json=payload, timeout=40)
+                        response = requests.post(url, json=payload, timeout=45)
                         res_json = response.json()
                         
                         if 'candidates' in res_json and len(res_json['candidates']) > 0:
@@ -106,13 +99,10 @@ if check_password():
                                     "Justificativa": cols[6].strip() if len(cols) > 6 else ""
                                 })
                                 sucesso_nota = True
-                                break # Sucesso! Sai do loop de retry
-                        
-                        # Se chegou aqui, a API respondeu mas sem conteúdo (ex: bloqueio ou erro de cota)
-                        time.sleep(2) # Espera antes de tentar de novo
-                        
-                    except Exception as e:
-                        time.sleep(2) # Espera em caso de erro de conexão
+                                break
+                        time.sleep(2)
+                    except Exception:
+                        time.sleep(2)
                 
                 if not sucesso_nota:
                     resultados.append({"Arquivo": arq.name, "Status": "FALHA API", "Valor (R$)": 0.0, "Justificativa": "Sem resposta após 3 tentativas"})
@@ -123,55 +113,48 @@ if check_password():
 
             if resultados:
                 df = pd.DataFrame(resultados)
-                st.markdown("---")
                 
-                # DASHBOARD
+                # --- MÉTRICAS ---
+                st.markdown("### 📊 Visão Geral")
                 c1, c2, c3 = st.columns(3)
-                c1.metric("Notas", len(df))
-                c2.metric("Aprovado", f"R$ {df[df['Status']=='APROVADO']['Valor (R$)'].sum():,.2f}")
-                c3.metric("Economia", f"R$ {df[df['Status']!='APROVADO']['Valor (R$)'].sum():,.2f}")
+                total_val = df['Valor (R$)'].sum()
+                val_aprovado = df[df['Status']=='APROVADO']['Valor (R$)'].sum()
+                val_recusado = total_val - val_aprovado
 
-                col1, col2 = st.columns(2)
-                with col1:
-                    st.plotly_chart(px.bar(df, x='Categoria', y='Valor (R$)', color='Status', barmode='group'), use_container_width=True)
-                with col2:
-                    st.plotly_chart(px.pie(df, names='Status', values='Valor (R$)', hole=0.4), use_container_width=True)
+                c1.metric("Notas Processadas", len(df))
+                c2.metric("Total Aprovado", f"R$ {val_aprovado:,.2f}")
+                c3.metric("Economia Estimada", f"R$ {val_recusado:,.2f}", delta_color="normal")
 
+                # --- GRÁFICOS ---
+                col_g1, col_g2 = st.columns(2)
+                with col_g1:
+                    st.plotly_chart(px.bar(df, x='Categoria', y='Valor (R$)', color='Status', title="Gastos por Categoria", 
+                                         color_discrete_map={'APROVADO': '#2ecc71', 'REPROVADO': '#e74c3c'}), use_container_width=True)
+                with col_g2:
+                    st.plotly_chart(px.pie(df, names='Status', values='Valor (R$)', hole=0.4, title="Distribuição de Status",
+                                         color='Status', color_discrete_map={'APROVADO': '#2ecc71', 'REPROVADO': '#e74c3c'}), use_container_width=True)
+
+                # --- NOVA SEÇÃO: ANÁLISE NARRATIVA IA ---
+                st.markdown("---")
+                st.subheader("🤖 Diagnóstico Estratégico do Auditor")
+                with st.spinner("IA analisando tendências..."):
+                    resumo_ia = df[['Categoria', 'Valor (R$)', 'Status', 'Justificativa']].to_string()
+                    prompt_narrativa = (
+                        f"Aja como um auditor sênior. Analise estes dados:\n{resumo_ia}\n\n"
+                        "Escreva um diagnóstico curto (3-4 frases) para o gerente financeiro. "
+                        "Destaque a categoria com mais gastos, o principal motivo de reprovação e uma recomendação prática."
+                    )
+                    
+                    try:
+                        res_narrativa = requests.post(url, json={"contents": [{"parts": [{"text": prompt_narrativa}]}]}).json()
+                        texto_analise = res_narrativa['candidates'][0]['content']['parts'][0]['text']
+                        st.info(texto_analise)
+                    except:
+                        st.warning("O diagnóstico automático não pôde ser gerado.")
+
+                # --- TABELA E DOWNLOAD ---
+                st.markdown("### 📋 Detalhamento das Notas")
                 st.dataframe(df, use_container_width=True)
-                st.download_button("📥 Baixar Excel", df.to_csv(index=False, sep=';').encode('utf-8-sig'), "relatorio.csv")
-
-
-
-# --- ADICIONE ESTE BLOCO LOGO APÓS A CRIAÇÃO DO DATAFRAME (df) ---
-
-if resultados:
-    # ... (Seus gráficos e métricas existentes continuam aqui) ...
-
-    st.markdown("---")
-    st.subheader("🤖 Diagnóstico do Auditor (IA)")
-    
-    with st.spinner("Gerando análise estratégica..."):
-        # Preparamos um resumo textual para a IA analisar
-        resumo_texto = df[['Categoria', 'Valor (R$)', 'Status', 'Justificativa']].to_string()
-        
-        prompt_analise = (
-            f"Com base nos dados desta auditoria:\n{resumo_texto}\n\n"
-            "Escreva um diagnóstico rápido para o dono da empresa. "
-            "1. Aponte a categoria mais cara. "
-            "2. Cite o principal motivo de reprovação. "
-            "3. Dê uma dica de economia baseada nos dados. "
-            "Seja profissional e direto (máximo 4 frases)."
-        )
-
-        # Reutilizamos a API para gerar o texto
-        url_text = f"https://generativelanguage.googleapis.com/v1beta/models/{MODELO}:generateContent?key={api_key}"
-        payload_analise = {"contents": [{"parts": [{"text": prompt_analise}]}]}
-        
-        try:
-            res_ia = requests.post(url_text, json=payload_analise, timeout=30).json()
-            analise_narrativa = res_ia['candidates'][0]['content']['parts'][0]['text']
-            st.info(analise_narrativa)
-        except:
-            st.warning("Não foi possível gerar o diagnóstico automático no momento.")
-
-    # ... (O restante do seu código: Tabela e Download) ...
+                
+                csv = df.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
+                st.download_button("📥 Baixar Relatório Excel/CSV", csv, f"auditoria_{datetime.now().strftime('%d%m%Y')}.csv", "text/csv")
