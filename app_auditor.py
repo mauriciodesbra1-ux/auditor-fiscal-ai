@@ -139,3 +139,39 @@ if check_password():
 
                 st.dataframe(df, use_container_width=True)
                 st.download_button("📥 Baixar Excel", df.to_csv(index=False, sep=';').encode('utf-8-sig'), "relatorio.csv")
+
+
+
+# --- ADICIONE ESTE BLOCO LOGO APÓS A CRIAÇÃO DO DATAFRAME (df) ---
+
+if resultados:
+    # ... (Seus gráficos e métricas existentes continuam aqui) ...
+
+    st.markdown("---")
+    st.subheader("🤖 Diagnóstico do Auditor (IA)")
+    
+    with st.spinner("Gerando análise estratégica..."):
+        # Preparamos um resumo textual para a IA analisar
+        resumo_texto = df[['Categoria', 'Valor (R$)', 'Status', 'Justificativa']].to_string()
+        
+        prompt_analise = (
+            f"Com base nos dados desta auditoria:\n{resumo_texto}\n\n"
+            "Escreva um diagnóstico rápido para o dono da empresa. "
+            "1. Aponte a categoria mais cara. "
+            "2. Cite o principal motivo de reprovação. "
+            "3. Dê uma dica de economia baseada nos dados. "
+            "Seja profissional e direto (máximo 4 frases)."
+        )
+
+        # Reutilizamos a API para gerar o texto
+        url_text = f"https://generativelanguage.googleapis.com/v1beta/models/{MODELO}:generateContent?key={api_key}"
+        payload_analise = {"contents": [{"parts": [{"text": prompt_analise}]}]}
+        
+        try:
+            res_ia = requests.post(url_text, json=payload_analise, timeout=30).json()
+            analise_narrativa = res_ia['candidates'][0]['content']['parts'][0]['text']
+            st.info(analise_narrativa)
+        except:
+            st.warning("Não foi possível gerar o diagnóstico automático no momento.")
+
+    # ... (O restante do seu código: Tabela e Download) ...
