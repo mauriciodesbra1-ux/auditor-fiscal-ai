@@ -10,26 +10,43 @@ from datetime import datetime
 # --- CONFIGURAÇÃO DA PÁGINA ---
 st.set_page_config(page_title="Auditor AI Pro", layout="wide", page_icon="🛡️")
 
-# --- SISTEMA DE LOGIN ---
+# --- SISTEMA DE LOGIN SIMPLES ---
 def check_password():
+    """Retorna True se o usuário inseriu a senha correta."""
+    def password_entered():
+        if st.session_state["username"] == "admin" and st.session_state["password"] == "auditor2026":
+            st.session_state["password_correct"] = True
+            del st.session_state["password"]  # remove senha do estado
+            del st.session_state["username"]
+        else:
+            st.session_state["password_correct"] = False
+
     if "password_correct" not in st.session_state:
         st.title("🔒 Acesso Restrito")
-        user = st.text_input("Usuário")
-        pw = st.text_input("Senha", type="password")
-        if st.button("Entrar"):
-            if user == "admin" and pw == "auditor2026":
-                st.session_state["password_correct"] = True
-                st.rerun()
-            else:
-                st.error("Usuário ou senha incorretos.")
+        st.text_input("Usuário", on_change=password_entered, key="username")
+        st.text_input("Senha", type="password", on_change=password_entered, key="password")
         return False
-    return True
+    elif not st.session_state["password_correct"]:
+        st.text_input("Usuário", on_change=password_entered, key="username")
+        st.text_input("Senha", type="password", on_change=password_entered, key="password")
+        st.error("😕 Usuário ou senha incorretos.")
+        return False
+    else:
+        return True
 
 if check_password():
+    # --- INTERFACE PRINCIPAL (SÓ APARECE APÓS LOGIN) ---
     st.title("🛡️ AI Auditor Pro: Inteligência Fiscal")
     st.markdown("---")
 
-    # --- SEGURANÇA: LEITURA AUTOMÁTICA DA KEY (SECRETS) ---
+    # CSS para melhorar visual
+    st.markdown("""
+        <style>
+        .stMetric { background-color: #ffffff; padding: 15px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
+        </style>
+        """, unsafe_allow_html=True)
+
+    # --- SEGURANÇA: SECRETS ---
     if "GEMINI_KEY" in st.secrets:
         api_key = st.secrets["GEMINI_KEY"]
     else:
@@ -43,7 +60,7 @@ if check_password():
 
     if st.button("🚀 Iniciar Auditoria Estratégica") and arquivos:
         if not api_key:
-            st.error("⚠️ Erro: Chave de API não configurada nos Secrets.")
+            st.error("⚠️ Configure a API Key!")
         else:
             resultados = []
             progresso = st.progress(0)
@@ -58,18 +75,17 @@ if check_password():
                 
                 payload = {
                     "contents": [{"parts": [
-                        {"text": f"Extraia em uma linha: VALOR|LOCAL|CNPJ|DATA|CATEGORIA|STATUS|MOTIVO. Limite R$ {valor_max}. Categorias: Alimentação, Transporte, Hospedagem, Outros."},
+                        {"text": f"Extraia em uma linha: VALOR|LOCAL|CNPJ|DATA|CATEGORIA|STATUS|MOTIVO. Limite R$ {valor_max}, 90 dias. Categorias: Alimentação, Transporte, Hospedagem, Suprimentos, Outros."},
                         {"inline_data": {"mime_type": "image/jpeg", "data": img_b64}}
                     ]}],
-                    "generationConfig": {"temperature": 0.1},
                     "safetySettings": [{"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"}]
                 }
 
-                # --- MECANISMO DE RETRY (QUE VOCÊ VALIDOU) ---
+                # --- MECANISMO DE RETRY (TRATAMENTO DE FALHA API) ---
                 sucesso_nota = False
-                for tentativa in range(3):
+                for tentativa in range(3): # Tenta até 3 vezes
                     try:
-                        response = requests.post(url, json=payload, timeout=50)
+                        response = requests.post(url, json=payload, timeout=40)
                         res_json = response.json()
                         
                         if 'candidates' in res_json and len(res_json['candidates']) > 0:
@@ -90,10 +106,13 @@ if check_password():
                                     "Justificativa": cols[6].strip() if len(cols) > 6 else ""
                                 })
                                 sucesso_nota = True
-                                break
-                        time.sleep(2)
-                    except Exception:
-                        time.sleep(2)
+                                break # Sucesso! Sai do loop de retry
+                        
+                        # Se chegou aqui, a API respondeu mas sem conteúdo (ex: bloqueio ou erro de cota)
+                        time.sleep(2) # Espera antes de tentar de novo
+                        
+                    except Exception as e:
+                        time.sleep(2) # Espera em caso de erro de conexão
                 
                 if not sucesso_nota:
                     resultados.append({"Arquivo": arq.name, "Status": "FALHA API", "Valor (R$)": 0.0, "Justificativa": "Sem resposta após 3 tentativas"})
@@ -104,17 +123,19 @@ if check_password():
 
             if resultados:
                 df = pd.DataFrame(resultados)
+                st.markdown("---")
                 
-                # Exibição dos Dados
-                st.markdown("### 📊 Resultado da Auditoria")
-                st.dataframe(df, use_container_width=True)
-                
-                # Gráficos Simples (Sem a blindagem que causou erro)
+                # DASHBOARD
+                c1, c2, c3 = st.columns(3)
+                c1.metric("Notas", len(df))
+                c2.metric("Aprovado", f"R$ {df[df['Status']=='APROVADO']['Valor (R$)'].sum():,.2f}")
+                c3.metric("Economia", f"R$ {df[df['Status']!='APROVADO']['Valor (R$)'].sum():,.2f}")
+
                 col1, col2 = st.columns(2)
                 with col1:
-                    st.plotly_chart(px.bar(df, x='Categoria', y='Valor (R$)', color='Status'), use_container_width=True)
+                    st.plotly_chart(px.bar(df, x='Categoria', y='Valor (R$)', color='Status', barmode='group'), use_container_width=True)
                 with col2:
-                    st.plotly_chart(px.pie(df, names='Status', values='Valor (R$)'), use_container_width=True)
+                    st.plotly_chart(px.pie(df, names='Status', values='Valor (R$)', hole=0.4), use_container_width=True)
 
-                csv = df.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
-                st.download_button("📥 Baixar Planilha", csv, "auditoria.csv", "text/csv")
+                st.dataframe(df, use_container_width=True)
+                st.download_button("📥 Baixar Excel", df.to_csv(index=False, sep=';').encode('utf-8-sig'), "relatorio.csv")
