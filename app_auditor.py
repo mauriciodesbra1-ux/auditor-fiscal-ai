@@ -29,11 +29,8 @@ if check_password():
     st.title("🛡️ AI Auditor Pro: Inteligência Fiscal")
     st.markdown("---")
 
-    # --- SEGURANÇA: SECRETS ---
-    if "GEMINI_KEY" in st.secrets:
-        api_key = st.secrets["GEMINI_KEY"]
-    else:
-        api_key = st.sidebar.text_input("Gemini API Key", type="password")
+    # Recuperação da chave via Secrets ou Sidebar
+    api_key = st.secrets.get("GEMINI_KEY", st.sidebar.text_input("Gemini API Key", type="password"))
 
     valor_max = st.sidebar.number_input("Limite de Reembolso (R$)", value=250.0)
     arquivos = st.file_uploader("📂 Upload das Notas", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
@@ -58,7 +55,7 @@ if check_password():
                 
                 payload = {
                     "contents": [{"parts": [
-                        {"text": f"Extraia em uma única linha: VALOR|LOCAL|CNPJ|DATA|CATEGORIA|STATUS|MOTIVO. Limite R$ {valor_max}. Categorias: Alimentação, Transporte, Hospedagem, Outros."},
+                        {"text": "Extraia EXATAMENTE neste formato: VALOR|LOCAL|CNPJ|DATA|CATEGORIA|STATUS|MOTIVO."},
                         {"inline_data": {"mime_type": "image/jpeg", "data": img_b64}}
                     ]}],
                     "generationConfig": {"temperature": 0.1},
@@ -66,37 +63,46 @@ if check_password():
                 }
 
                 sucesso_nota = False
-                for tentativa in range(3):
+                for tentativa in range(2):
                     try:
-                        response = requests.post(url, json=payload, timeout=50)
+                        response = requests.post(url, json=payload, timeout=40)
                         res_json = response.json()
                         if 'candidates' in res_json:
                             texto = res_json['candidates'][0]['content']['parts'][0]['text'].strip()
-                            cols = texto.replace('`', '').replace('markdown', '').strip().split("|")
+                            # Limpeza de markdown caso a IA envie
+                            texto = texto.replace('`', '').replace('markdown', '').strip()
+                            cols = texto.split("|")
                             
-                            if len(cols) >= 6:
-                                v_str = re.sub(r'[^\d,.]', '', cols[0]).replace(',', '.')
-                                resultados.append({
-                                    "Arquivo": arq.name,
-                                    "Valor (R$)": float(v_str) if v_str else 0.0,
-                                    "Local": cols[1].strip(),
-                                    "CNPJ": cols[2].strip(),
-                                    "Data": cols[3].strip(),
-                                    "Categoria": cols[4].strip(),
-                                    "Status": cols[5].strip().upper(),
-                                    "Justificativa": cols[6].strip() if len(cols) > 6 else ""
-                                })
-                                sucesso_nota = True
-                                break
-                        time.sleep(2)
+                            # --- PREENCHIMENTO DE SEGURANÇA (Se faltar coluna, a gente cria) ---
+                            valor_extraido = re.sub(r'[^\d,.]', '', cols[0]).replace(',', '.') if len(cols) > 0 else "0.0"
+                            local_extraido = cols[1].strip() if len(cols) > 1 else "Não Identificado"
+                            cnpj_extraido = cols[2].strip() if len(cols) > 2 else "00.000.000/0001-00"
+                            data_extraida = cols[3].strip() if len(cols) > 3 else "00/00/0000"
+                            cat_extraida = cols[4].strip() if len(cols) > 4 else "Outros"
+                            status_extraido = cols[5].strip().upper() if len(cols) > 5 else "FALHA"
+                            motivo_extraido = cols[6].strip() if len(cols) > 6 else "Erro na extração"
+
+                            resultados.append({
+                                "Arquivo": arq.name,
+                                "Valor (R$)": float(valor_extraido) if valor_extraido else 0.0,
+                                "Local": local_extraido,
+                                "CNPJ": cnpj_extraido,
+                                "Data": data_extraida,
+                                "Categoria": cat_extraida,
+                                "Status": status_extraido,
+                                "Justificativa": motivo_extraido
+                            })
+                            sucesso_nota = True
+                            break
+                        time.sleep(1)
                     except:
-                        time.sleep(2)
+                        time.sleep(1)
                 
                 if not sucesso_nota:
-                    # Se falhar, preenchemos com valores padrão para não quebrar o gráfico
                     resultados.append({
-                        "Arquivo": arq.name, "Valor (R$)": 0.0, "Local": "Erro", "CNPJ": "0", 
-                        "Data": "0", "Categoria": "Outros", "Status": "FALHA API", "Justificativa": "Sem resposta"
+                        "Arquivo": arq.name, "Valor (R$)": 0.0, "Local": "Erro de API", 
+                        "CNPJ": "0", "Data": "0", "Categoria": "Outros", 
+                        "Status": "FALHA", "Justificativa": "Sem resposta"
                     })
                 
                 progresso.progress((i + 1) / len(arquivos))
@@ -106,34 +112,30 @@ if check_password():
             if resultados:
                 df = pd.DataFrame(resultados)
                 
-                # --- LIMPEZA CRÍTICA PARA O PLOTLY ---
-                df['Valor (R$)'] = pd.to_numeric(df['Valor (R$)'], errors='coerce').fillna(0.0)
-                df['Status'] = df['Status'].fillna('FALHA API').str.upper()
-                df['Categoria'] = df['Categoria'].fillna('Outros')
+                # Garante que as colunas críticas existam mesmo se o DataFrame estiver estranho
+                for c in ["Categoria", "Status", "Valor (R$)"]:
+                    if c not in df.columns: df[c] = "Indefinido" if c != "Valor (R$)" else 0.0
 
-                st.markdown("### 📊 Dashboard de Auditoria")
+                st.markdown("### 📊 Dashboard")
                 
-                # Gráficos protegidos por try/except
                 col1, col2 = st.columns(2)
+                cores_map = {'APROVADO': '#2ecc71', 'REPROVADO': '#e74c3c', 'FALHA': '#95a5a6'}
                 
                 with col1:
                     try:
                         fig_bar = px.bar(df, x='Categoria', y='Valor (R$)', color='Status', 
-                                       title="Gastos por Categoria", barmode='group')
-                        st.plotly_chart(fig_bar, use_container_width=True)
+                                       color_discrete_map=cores_map, title="Gastos por Categoria")
+                        st.plotly_chart(fig_bar, width='stretch')
                     except Exception:
-                        st.warning("⚠️ Dados insuficientes para o gráfico de barras.")
+                        st.warning("Gráfico de barras indisponível.")
 
                 with col2:
                     try:
                         fig_pie = px.pie(df, names='Status', values='Valor (R$)', 
-                                       title="Distribuição de Status", hole=0.4)
-                        st.plotly_chart(fig_pie, use_container_width=True)
+                                       color='Status', color_discrete_map=cores_map, title="Status Geral")
+                        st.plotly_chart(fig_pie, width='stretch')
                     except Exception:
-                        st.warning("⚠️ Dados insuficientes para o gráfico de pizza.")
+                        st.warning("Gráfico de pizza indisponível.")
 
-                st.markdown("---")
-                st.dataframe(df, use_container_width=True)
-                
-                csv = df.to_csv(index=False, sep=';', encoding='utf-8-sig').encode('utf-8-sig')
-                st.download_button("📥 Baixar Planilha", csv, "auditoria.csv", "text/csv")
+                st.dataframe(df, width='stretch')
+                st.download_button("📥 Baixar Planilha", df.to_csv(index=False, sep=';').encode('utf-8-sig'), "relatorio.csv")
