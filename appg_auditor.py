@@ -28,8 +28,8 @@ if not st.session_state["autenticado"]:
     st.stop()
 
 # --- INTERFACE ---
-st.title("🛡️ Auditoria Fiscal Inteligente (Groq Stable)")
-st.caption("Versão de Produção 2026 - Llama 3.2 Vision")
+st.title("🛡️ Auditoria Fiscal Inteligente")
+st.caption("Engine: Llama-3.2-11b-vision (Produção)")
 
 # API Key via Secrets
 groq_key = st.secrets.get("GROQ_API_KEY", "")
@@ -40,7 +40,7 @@ with st.sidebar:
     st.header("⚙️ Configurações")
     limite = st.number_input("Limite de Reembolso (R$)", value=250.0)
     st.divider()
-    st.info("Otimizado para evitar erros 400/404 de modelos.")
+    st.info("Utilizando modelo de 11B para maior estabilidade.")
 
 arquivos = st.file_uploader("Upload das Notas", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
 
@@ -49,54 +49,49 @@ def preparar_imagem(upload):
     img = Image.open(upload)
     if img.mode != 'RGB':
         img = img.convert('RGB')
-    # Redimensiona para garantir compatibilidade com limites da API
+    # Redimensiona para 1024px para garantir que não ultrapasse o limite de tokens de imagem
     img.thumbnail((1024, 1024))
     buffer = io.BytesIO()
     img.save(buffer, format="JPEG", quality=85)
     return base64.b64encode(buffer.getvalue()).decode('utf-8')
 
-# --- CHAMADA À API COM TRATAMENTO DE ERROS CORRIGIDO ---
+# --- CHAMADA À API ---
 def chamar_groq_vision(api_key, b64_img, teto):
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     
-    # Modelos estáveis para 2026
-    modelos_disponiveis = ["llama-3.2-11b-vision", "llama-3.2-90b-vision"]
+    # Modelo 11B é o padrão estável para visão na Groq
+    modelo = "llama-3.2-11b-vision"
     
     prompt = (
         f"Extraia estritamente: VALOR|LOCAL|CATEGORIA|STATUS. "
-        f"Regra: Se valor > {teto}, STATUS=REPROVADO, senão APROVADO. "
+        f"Regra: Se valor total > {teto}, STATUS=REPROVADO, senão APROVADO. "
         "Responda apenas a string separada por pipe."
     )
     
-    erro_acumulado = "Nenhum modelo disponível respondeu."
+    payload = {
+        "model": modelo,
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": prompt},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"}}
+            ]
+        }],
+        "temperature": 0
+    }
     
-    for modelo in modelos_disponiveis:
-        payload = {
-            "model": modelo,
-            "messages": [{
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"}}
-                ]
-            }],
-            "temperature": 0
-        }
-        
-        try:
-            response = requests.post(url, headers=headers, json=payload, timeout=25)
-            if response.status_code == 200:
-                return response, None # Retorna sucesso e nenhum erro
-            else:
-                erro_acumulado = response.text
-        except Exception as e:
-            erro_acumulado = str(e)
-            
-    return None, erro_acumulado
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=25)
+        if response.status_code == 200:
+            return response, None
+        else:
+            return None, response.text
+    except Exception as e:
+        return None, str(e)
 
 # --- PROCESSAMENTO ---
-if st.button("🔍 Iniciar Processamento") and arquivos:
+if st.button("🚀 Iniciar Processamento") and arquivos:
     if not groq_key:
         st.error("Adicione a GROQ_API_KEY nos Secrets.")
         st.stop()
@@ -109,13 +104,13 @@ if st.button("🔍 Iniciar Processamento") and arquivos:
         msg_status.info(f"Analisando: {arq.name}")
         try:
             img_b64 = preparar_imagem(arq)
-            res, erro_msg = chamar_groq_vision(groq_key, img_b64, limite)
+            res, erro_api = chamar_groq_vision(groq_key, img_b64, limite)
             
             if res:
                 content = res.json()['choices'][0]['message']['content']
                 partes = content.split('|')
                 
-                # Parsing Numérico Seguro (Fix syntax error)
+                # Parsing Numérico Seguro
                 v_str = re.sub(r'[^\d.]', '', partes[0].replace(',', '.'))
                 valor = float(v_str) if v_str else 0.0
                 
@@ -127,7 +122,7 @@ if st.button("🔍 Iniciar Processamento") and arquivos:
                     "Status": partes[3].strip().upper() if len(partes) > 3 else "ERRO"
                 })
             else:
-                st.error(f"Erro no arquivo {arq.name}: {erro_msg}")
+                st.error(f"Erro no arquivo {arq.name}: {erro_api}")
         except Exception as e:
             st.error(f"Falha técnica em {arq.name}: {str(e)}")
         
@@ -151,5 +146,4 @@ if st.button("🔍 Iniciar Processamento") and arquivos:
                             use_container_width=True)
             
         st.dataframe(df, use_container_width=True)
-        st.download_button("📥 Baixar Dados", df.to_csv(index=False).encode('utf-8'), 
-                           "auditoria.csv", "text/csv")
+        st.download_button("📥 Baixar CSV", df.to_csv(index=False).encode('utf-8'), "auditoria.csv", "text/csv")
