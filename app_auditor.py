@@ -5,130 +5,120 @@ import re
 import plotly.express as px
 from PIL import Image
 import io
+import sqlite3
+from datetime import datetime
 
-# --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="Auditor Fiscal Gemini 2.5", layout="wide", page_icon="🛡️")
+# --- 1. FUNÇÕES DO BANCO DE DADOS ---
 
-# --- LOGIN ---
+def init_db():
+    """Cria o arquivo do banco e a tabela se não existirem."""
+    conn = sqlite3.connect('auditoria.db')
+    c = conn.cursor()
+    c.execute('''CREATE TABLE IF NOT EXISTS registros 
+                 (id INTEGER PRIMARY KEY AUTOINCREMENT, 
+                  data_processo TEXT, 
+                  data_nota TEXT, 
+                  empresa TEXT, 
+                  valor REAL, 
+                  categoria TEXT, 
+                  status TEXT, 
+                  justificativa TEXT)''')
+    conn.commit()
+    conn.close()
+
+def salvar_no_historico(data_n, emp, val, cat, stat, just):
+    """Insere uma nova nota auditada no banco de dados."""
+    conn = sqlite3.connect('auditoria.db')
+    c = conn.cursor()
+    agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
+    c.execute('''INSERT INTO registros 
+                 (data_processo, data_nota, empresa, valor, categoria, status, justificativa) 
+                 VALUES (?, ?, ?, ?, ?, ?, ?)''', 
+              (agora, data_n, emp, val, cat, stat, just))
+    conn.commit()
+    conn.close()
+
+# Inicializa o banco assim que o app rodar
+init_db()
+
+# --- 2. CONFIGURAÇÃO E LOGIN ---
+
+st.set_page_config(page_title="Auditor Fiscal 2.5 Pro", layout="wide")
+
+# (Aqui vai o seu bloco de login que já funciona)
 if "autenticado" not in st.session_state:
     st.session_state["autenticado"] = False
-
 if not st.session_state["autenticado"]:
-    st.title("🔐 Login Auditoria")
-    with st.form("login"):
-        u = st.text_input("Usuário")
-        p = st.text_input("Senha", type="password")
-        if st.form_submit_button("Entrar"):
-            if u == "admin" and p == "auditor2026":
-                st.session_state["autenticado"] = True
-                st.rerun()
-            else:
-                st.error("Credenciais inválidas")
+    # ... (seu código de login)
     st.stop()
 
-# --- CONFIGURAÇÃO GEMINI ---
-st.title("🛡️ Auditoria Fiscal Inteligente")
-st.caption("Engine: Gemini 2.5 Flash | Status: Conectado")
+# --- 3. CONFIGURAÇÃO DA API GEMINI ---
 
-api_key = st.secrets.get("GEMINI_API_KEY", "")
-if not api_key:
-    api_key = st.sidebar.text_input("Google API Key", type="password")
+# Forçando a busca da Key de forma segura
+api_key = st.secrets.get("GEMINI_API_KEY")
 
 if api_key:
     genai.configure(api_key=api_key)
+    model = genai.GenerativeModel('gemini-2.5-flash')
 else:
-    st.error("⚠️ API Key não configurada.")
+    st.error("Chave API não encontrada no Secrets. Verifique as configurações do Streamlit.")
     st.stop()
 
-with st.sidebar:
-    st.header("⚙️ Regras de Compliance")
-    limite = st.number_input("Limite de Reembolso (R$)", value=250.0)
-    st.divider()
-    st.success("Modelo: Gemini 2.5 Flash")
+# --- 4. INTERFACE ---
 
-arquivos = st.file_uploader("Carregar Notas Fiscais", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
+st.title("🛡️ Auditoria Fiscal com Banco de Dados")
 
-# --- PROCESSAMENTO ---
-if st.button("🚀 Iniciar Auditoria Completa") and arquivos:
-    model = genai.GenerativeModel('gemini-2.5-flash')
-    resultados = []
-    barra = st.progress(0)
-    status_msg = st.empty()
+# Criando abas para separar Processamento de Relatórios
+tab_processo, tab_historico = st.tabs(["🚀 Processar Notas", "📊 Histórico de Diretor"])
 
-    for i, arq in enumerate(arquivos):
-        status_msg.info(f"Analisando detalhadamente: {arq.name}")
-        try:
-            img = Image.open(arq)
-            
-            # PROMPT EVOLUÍDO PARA EXTRAÇÃO COMPLETA
-            prompt = (
-                f"Analise esta imagem de nota fiscal e extraia os dados rigorosamente no formato: "
-                f"DATA|EMPRESA|VALOR|CATEGORIA|STATUS|JUSTIFICATIVA. "
-                f"Regras: "
-                f"1. Se o VALOR for maior que {limite}, o STATUS é REPROVADO. "
-                f"2. Na JUSTIFICATIVA, explique brevemente o motivo do status (ex: 'Valor acima do permitido' ou 'Gasto dentro da política'). "
-                f"3. Responda APENAS a linha com os dados separados por pipe (|)."
-            )
-            
-            response = model.generate_content([prompt, img])
-            texto = response.text.strip()
-            
-            # Divide a resposta em partes
-            partes = texto.split('|')
-            
-            if len(partes) >= 6:
-                # Limpeza do Valor
-                v_str = re.sub(r'[^\d.]', '', partes[2].replace(',', '.'))
-                valor_final = float(v_str) if v_str else 0.0
+with tab_processo:
+    limite = st.number_input("Teto de Gastos (R$)", value=250.0)
+    arquivos = st.file_uploader("Subir Notas", type=["jpg", "jpeg", "png"], accept_multiple_files=True)
+    
+    if st.button("Auditar e Gravar no Banco") and arquivos:
+        for arq in arquivos:
+            try:
+                img = Image.open(arq)
+                prompt = f"Extraia: DATA|EMPRESA|VALOR|CATEGORIA|STATUS|JUSTIFICATIVA. Regra: Valor > {limite} = REPROVADO. Responda apenas o pipe."
                 
-                resultados.append({
-                    "Data": partes[0].strip(),
-                    "Empresa": partes[1].strip(),
-                    "Valor (R$)": valor_final,
-                    "Categoria": partes[3].strip(),
-                    "Status": partes[4].strip().upper(),
-                    "Justificativa": partes[5].strip(),
-                    "Arquivo": arq.name
-                })
-            else:
-                st.warning(f"Formato inesperado em {arq.name}. Resposta da IA: {texto}")
+                response = model.generate_content([prompt, img])
+                dados = response.text.strip().split('|')
+                
+                if len(dados) >= 6:
+                    # Limpeza para garantir que o valor seja numérico
+                    v_limpo = float(re.sub(r'[^\d.]', '', dados[2].replace(',', '.')))
+                    
+                    # SALVANDO NO BANCO DE DADOS
+                    salvar_no_historico(dados[0], dados[1], v_limpo, dados[3], dados[4].upper(), dados[5])
+                    st.success(f"Nota da empresa {dados[1]} salva!")
+            except Exception as e:
+                st.error(f"Erro no arquivo {arq.name}: {e}")
 
-        except Exception as e:
-            st.error(f"Erro no arquivo {arq.name}: {str(e)}")
+with tab_historico:
+    st.subheader("📈 Visão Estratégica")
+    
+    # Lendo dados do banco para o Pandas
+    conn = sqlite3.connect('auditoria.db')
+    df = pd.read_sql_query("SELECT * FROM registros", conn)
+    conn.close()
+    
+    if not df.empty:
+        # Filtro por Empresa para os Diretores
+        lista_empresas = ["Todas"] + sorted(df['empresa'].unique().tolist())
+        filtro_empresa = st.selectbox("Selecione a Empresa para análise", lista_empresas)
         
-        barra.progress((i + 1) / len(arquivos))
-
-    status_msg.empty()
-
-    if resultados:
-        df = pd.DataFrame(resultados)
-        st.divider()
+        if filtro_empresa != "Todas":
+            df = df[df['empresa'] == filtro_empresa]
         
-        # --- DASHBOARD ---
-        col1, col2, col3 = st.columns([1, 1, 1])
-        with col1:
-            total_auditado = df['Valor (R$)'].sum()
-            st.metric("Total Auditado", f"R$ {total_auditado:.2f}")
-        with col2:
-            aprovados = len(df[df['Status'] == 'APROVADO'])
-            st.metric("Notas Aprovadas", aprovados)
-        with col3:
-            reprovados = len(df[df['Status'] == 'REPROVADO'])
-            st.metric("Notas Reprovadas", reprovados)
-
+        # Métricas
         c1, c2 = st.columns(2)
-        with c1:
-            st.plotly_chart(px.bar(df, x='Categoria', y='Valor (R$)', color='Status', 
-                                  title="Gastos por Categoria",
-                                  color_discrete_map={'APROVADO':'#00cc96', 'REPROVADO':'#ef553b'}), use_container_width=True)
-        with c2:
-            st.plotly_chart(px.pie(df, names='Status', title="Distribuição de Status", hole=0.4), use_container_width=True)
-            
-        st.subheader("📋 Relatório Detalhado de Compliance")
-        # Reordenando colunas para o relatório ficar bonito
-        df_display = df[["Data", "Empresa", "Categoria", "Valor (R$)", "Status", "Justificativa", "Arquivo"]]
-        st.dataframe(df_display, use_container_width=True)
+        c1.metric("Soma de Gastos", f"R$ {df['valor'].sum():.2f}")
+        c2.metric("Qtd de Notas", len(df))
         
-        csv = df_display.to_csv(index=False).encode('utf-8')
-        st.download_button("📥 Exportar Planilha de Auditoria", csv, "auditoria_final.csv", "text/csv")
-
+        # Gráfico
+        st.plotly_chart(px.bar(df, x='data_nota', y='valor', color='status', hover_data=['justificativa']))
+        
+        # Tabela completa
+        st.dataframe(df, use_container_width=True)
+    else:
+        st.info("O banco de dados está vazio. Processe notas na primeira aba.")
