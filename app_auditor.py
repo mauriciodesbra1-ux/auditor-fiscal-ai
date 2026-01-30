@@ -8,38 +8,39 @@ import io
 import sqlite3
 from datetime import datetime
 
-# --- 1. BANCO DE DADOS (CRIAÇÃO AUTOMÁTICA) ---
+# --- 1. BANCO DE DADOS ATUALIZADO (INCLUINDO CNPJ) ---
 def init_db():
     conn = sqlite3.connect('auditoria.db')
     c = conn.cursor()
+    # Adicionado coluna cnpj
     c.execute('''CREATE TABLE IF NOT EXISTS registros 
                  (id INTEGER PRIMARY KEY AUTOINCREMENT, 
                   data_processo TEXT, data_nota TEXT, empresa TEXT, 
-                  valor REAL, categoria TEXT, status TEXT, justificativa TEXT)''')
+                  cnpj TEXT, valor REAL, categoria TEXT, status TEXT, justificativa TEXT)''')
     conn.commit()
     conn.close()
 
-def salvar_no_historico(data_n, emp, val, cat, stat, just):
+def salvar_no_historico(data_n, emp, cnpj, val, cat, stat, just):
     conn = sqlite3.connect('auditoria.db')
     c = conn.cursor()
     agora = datetime.now().strftime("%d/%m/%Y %H:%M:%S")
     c.execute('''INSERT INTO registros 
-                 (data_processo, data_nota, empresa, valor, categoria, status, justificativa) 
-                 VALUES (?, ?, ?, ?, ?, ?, ?)''', 
-              (agora, data_n, emp, val, cat, stat, just))
+                 (data_processo, data_nota, empresa, cnpj, valor, categoria, status, justificativa) 
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)''', 
+              (agora, data_n, emp, cnpj, val, cat, stat, just))
     conn.commit()
     conn.close()
 
 init_db()
 
-# --- 2. LOGIN E SECRETS ---
-st.set_page_config(page_title="Auditor Pro 2.5", layout="wide")
+# --- 2. CONFIGURAÇÃO E LOGIN ---
+st.set_page_config(page_title="Auditor Pro 2026", layout="wide")
 
 if "autenticado" not in st.session_state:
     st.session_state["autenticado"] = False
 
 if not st.session_state["autenticado"]:
-    st.title("🔐 Login")
+    st.title("🔐 Login de Auditoria")
     with st.form("login"):
         u = st.text_input("Usuário")
         p = st.text_input("Senha", type="password")
@@ -49,85 +50,106 @@ if not st.session_state["autenticado"]:
                 st.rerun()
     st.stop()
 
-# Recuperação Robusta da Key
+# Secrets Management
 api_key = st.secrets.get("GEMINI_API_KEY")
 if not api_key:
-    st.error("Chave GEMINI_API_KEY não encontrada nos Secrets!")
+    st.error("Configure a GEMINI_API_KEY no painel do Streamlit!")
     st.stop()
 
 genai.configure(api_key=api_key)
 model = genai.GenerativeModel('gemini-2.5-flash')
 
-# --- 3. INTERFACE ---
-st.title("🛡️ Auditoria Fiscal Automática")
+# --- 3. INTERFACE PRINCIPAL ---
+st.title("🛡️ Auditoria Fiscal Estratégica")
 
-tab_processo, tab_historico = st.tabs(["🚀 Processar Agora", "📊 Banco de Dados"])
+tab_processo, tab_historico = st.tabs(["🚀 Processar Notas", "📊 Visão por Categoria/Empresa"])
 
 with tab_processo:
-    limite = st.number_input("Limite (R$)", value=250.0)
-    arquivos = st.file_uploader("Subir Notas", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
+    col_config1, col_config2 = st.columns(2)
+    with col_config1:
+        limite = st.number_input("Limite Global de Reembolso (R$)", value=250.0)
     
-    if st.button("Executar Auditoria") and arquivos:
-        resultados_imediatos = []
+    arquivos = st.file_uploader("Upload de Notas Fiscais", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
+    
+    if st.button("Executar Auditoria e Salvar") and arquivos:
         barra = st.progress(0)
         
         for idx, arq in enumerate(arquivos):
             try:
                 img = Image.open(arq)
-                # Prompt reforçado para evitar textos extras da IA
-                prompt = f"""Analise a nota. Responda APENAS uma linha no formato: 
-                DATA|EMPRESA|VALOR|CATEGORIA|STATUS|JUSTIFICATIVA. 
-                Regra: Se valor > {limite} STATUS=REPROVADO. Use ponto para decimal."""
+                # Prompt atualizado para capturar CNPJ
+                prompt = f"""Analise a nota fiscal. Responda APENAS uma linha no formato: 
+                DATA|EMPRESA|CNPJ|VALOR|CATEGORIA|STATUS|JUSTIFICATIVA. 
+                Regras: 
+                - Se valor > {limite}, STATUS=REPROVADO.
+                - Categorias aceitas: Alimentação, Transporte, Hospedagem, Material, Outros.
+                - CNPJ: Apenas números ou formato 00.000.000/0000-00."""
                 
                 response = model.generate_content([prompt, img])
-                texto_ia = response.text.strip()
-                
-                # Tratamento para remover possíveis marcações de markdown (```) que a IA as vezes coloca
-                texto_ia = texto_ia.replace("```", "").replace("pipe", "").strip()
+                texto_ia = response.text.strip().replace("```", "").replace("pipe", "").strip()
                 
                 partes = texto_ia.split('|')
                 
-                if len(partes) >= 6:
-                    v_raw = re.sub(r'[^\d.]', '', partes[2].replace(',', '.'))
+                if len(partes) >= 7:
+                    v_raw = re.sub(r'[^\d.]', '', partes[3].replace(',', '.'))
                     valor = float(v_raw) if v_raw else 0.0
                     
-                    # Salva no Banco
-                    salvar_no_historico(partes[0], partes[1], valor, partes[3], partes[4].upper(), partes[5])
-                    
-                    # Guarda para mostrar na tela agora
-                    resultados_imediatos.append({
-                        "Data": partes[0], "Empresa": partes[1], "Valor": valor,
-                        "Status": partes[4], "Justificativa": partes[5]
-                    })
+                    salvar_no_historico(
+                        partes[0].strip(), # Data Nota
+                        partes[1].strip(), # Empresa
+                        partes[2].strip(), # CNPJ
+                        valor,             # Valor
+                        partes[4].strip(), # Categoria
+                        partes[5].strip().upper(), # Status
+                        partes[6].strip()  # Justificativa
+                    )
+                    st.success(f"Processado: {partes[1]} (CNPJ: {partes[2]})")
                 else:
-                    st.error(f"IA deu resposta incompleta em {arq.name}: {texto_ia}")
+                    st.error(f"Erro no formato da IA para {arq.name}")
             except Exception as e:
-                st.error(f"Erro no arquivo {arq.name}: {e}")
+                st.error(f"Erro técnico: {e}")
             
             barra.progress((idx + 1) / len(arquivos))
-        
-        # MOSTRA RESULTADO NA TELA IMEDIATAMENTE
-        if resultados_imediatos:
-            st.success("Processamento concluído!")
-            st.table(pd.DataFrame(resultados_imediatos))
 
 with tab_historico:
-    st.subheader("📋 Registros Salvos no Banco")
     conn = sqlite3.connect('auditoria.db')
+    # Carregamos os dados brutos
     df = pd.read_sql_query("SELECT * FROM registros ORDER BY id DESC", conn)
     conn.close()
     
     if not df.empty:
-        # Filtro por Empresa (Desejo dos Diretores)
-        lista_empresas = ["Todas"] + sorted(df['empresa'].unique().tolist())
-        emp_sel = st.selectbox("Filtrar Histórico por Empresa", lista_empresas)
+        # Filtros Superiores
+        c1, c2 = st.columns(2)
+        with c1:
+            filtro_cat = st.multiselect("Filtrar por Categoria", df['categoria'].unique(), default=df['categoria'].unique())
+        with c2:
+            filtro_emp = st.selectbox("Filtrar por Empresa", ["Todas"] + sorted(df['empresa'].unique().tolist()))
         
-        df_view = df if emp_sel == "Todas" else df[df['empresa'] == emp_sel]
+        # Aplicando Filtros
+        df_filtrado = df[df['categoria'].isin(filtro_cat)]
+        if filtro_emp != "Todas":
+            df_filtrado = df_filtrado[df_filtrado['empresa'] == filtro_emp]
+
+        # --- DASHBOARD PARA DIRETORIA ---
+        st.divider()
+        m1, m2, m3 = st.columns(3)
+        m1.metric("Total Acumulado", f"R$ {df_filtrado['valor'].sum():.2f}")
+        m2.metric("Nº de Notas", len(df_filtrado))
+        m3.metric("Média por Nota", f"R$ {df_filtrado['valor'].mean():.2f}")
+
+        # Gráfico Agrupado por Categoria
+        st.subheader("📊 Gastos Agrupados por Categoria")
+        fig_cat = px.bar(df_filtrado, x='categoria', y='valor', color='status', 
+                         title="Volume Financeiro por Categoria", barmode='group')
+        st.plotly_chart(fig_cat, use_container_width=True)
+
+        # Planilha Detalhada (com CNPJ)
+        st.subheader("📋 Detalhamento da Planilha")
+        st.dataframe(df_filtrado[['data_nota', 'empresa', 'cnpj', 'valor', 'categoria', 'status', 'justificativa']], 
+                     use_container_width=True)
         
-        st.dataframe(df_view, use_container_width=True)
-        
-        # Gráfico de histórico
-        fig = px.bar(df_view, x='empresa', y='valor', color='status', title="Volume de Gastos por Empresa")
-        st.plotly_chart(fig, use_container_width=True)
+        # Botão de Exportação
+        csv = df_filtrado.to_csv(index=False).encode('utf-8')
+        st.download_button("📥 Baixar Planilha Auditada (CSV)", csv, "auditoria_cnpj.csv", "text/csv")
     else:
-        st.info("O Banco de Dados está vazio.")
+        st.info("Ainda não existem dados no histórico. Processe algumas notas primeiro.")
