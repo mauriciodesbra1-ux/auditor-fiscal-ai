@@ -8,7 +8,7 @@ from PIL import Image
 import io
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="Auditor Groq 2026 Fix", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="Auditor Groq 2026 Stable", layout="wide", page_icon="🛡️")
 
 # --- LOGIN ---
 if "autenticado" not in st.session_state:
@@ -28,8 +28,8 @@ if not st.session_state["autenticado"]:
     st.stop()
 
 # --- INTERFACE ---
-st.title("🛡️ Auditoria Fiscal (Multi-Model Fallback)")
-st.caption("Auto-ajustando modelo para evitar Erro 404")
+st.title("🛡️ Auditoria Fiscal Inteligente")
+st.caption("Engine: Llama 3.2 Vision | Infra: Groq LPU")
 
 groq_key = st.secrets.get("GROQ_API_KEY", "")
 if not groq_key:
@@ -37,11 +37,11 @@ if not groq_key:
 
 with st.sidebar:
     st.header("⚙️ Configurações")
-    limite = st.number_input("Limite (R$)", value=250.0)
+    limite = st.number_input("Limite de Reembolso (R$)", value=250.0)
     st.divider()
-    st.info("O sistema testará automaticamente as versões do Llama 3.2 Vision.")
+    st.info("Testando automaticamente variações do modelo 11B Vision.")
 
-arquivos = st.file_uploader("Carregar Notas", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
+arquivos = st.file_uploader("Upload das Notas", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
 
 # --- TRATAMENTO DE IMAGEM ---
 def preparar_imagem(upload):
@@ -53,21 +53,18 @@ def preparar_imagem(upload):
     img.save(buffer, format="JPEG", quality=85)
     return base64.b64encode(buffer.getvalue()).decode('utf-8')
 
-# --- FUNÇÃO DE CHAMADA AUTO-AJUSTÁVEL ---
+# --- FUNÇÃO DE CHAMADA ---
 def chamar_groq_vision(api_key, b64_img, teto):
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
     
-    # Lista de nomes possíveis para o modelo de 11B em 2026
-    modelos_teste = [
-        "llama-3.2-11b-vision-preview", 
-        "llama-3.2-11b-vision",
-        "llama-3.1-8b-instant" # Fallback apenas texto se vision falhar
-    ]
+    # Nomes possíveis para o modelo em 2026
+    modelos_teste = ["llama-3.2-11b-vision-preview", "llama-3.2-11b-vision"]
     
-    prompt = f"VALOR|LOCAL|CATEGORIA|STATUS. Regra: Valor > {teto} = REPROVADO. Responda apenas o pipe."
+    prompt = f"Extraia: VALOR|LOCAL|CATEGORIA|STATUS. Regra: Se valor > {teto}, STATUS=REPROVADO. Responda apenas o pipe."
     
-    erro_final = ""
+    ultimo_log_erro = "Nenhum modelo disponível respondeu."
+    
     for m in modelos_teste:
         payload = {
             "model": m,
@@ -82,54 +79,69 @@ def chamar_groq_vision(api_key, b64_img, teto):
         }
         
         try:
-            r = requests.post(url, headers=headers, json=payload, timeout=20)
+            r = requests.post(url, headers=headers, json=payload, timeout=25)
             if r.status_code == 200:
-                return r, m # Sucesso! Retorna o response e qual modelo funcionou
+                return r, m, None # Sucesso: Response, Modelo, Erro=None
             else:
-                erro_final = r.text
+                ultimo_log_erro = r.text
         except Exception as e:
-            erro_final = str(e)
+            ultimo_log_erro = str(e)
             
-    return None, erro_final
+    return None, None, ultimo_log_erro # Falha: None, None, Mensagem de Erro
 
 # --- PROCESSAMENTO ---
-if st.button("🚀 Processar") and arquivos:
+if st.button("🚀 Iniciar Processamento") and arquivos:
     if not groq_key:
-        st.error("Chave API não encontrada.")
+        st.error("Chave API ausente nos Secrets.")
         st.stop()
 
     resultados = []
     barra = st.progress(0)
-    
+    msg_status = st.empty()
+
     for i, arq in enumerate(arquivos):
+        msg_status.info(f"Analisando: {arq.name}")
         try:
             img_b64 = preparar_imagem(arq)
-            res, m_ativo = chamar_groq_vision(groq_key, img_b64, limite)
+            res, m_ativo, erro_retornado = chamar_groq_vision(groq_key, img_b64, limite)
             
             if res:
-                # Se o modelo usado for o preview, o log avisará
                 content = res.json()['choices'][0]['message']['content']
-                p = content.split('|')
-                v_limpo = re.sub(r'[^\d.]', '', p[0].replace(',', '.'))
+                partes = content.split('|')
+                
+                # Parsing Numérico
+                v_str = re.sub(r'[^\d.]', '', partes[0].replace(',', '.'))
+                valor = float(v_str) if v_str else 0.0
                 
                 resultados.append({
                     "Arquivo": arq.name,
-                    "Valor (R$)": float(v_limpo) if v_limpo else 0.0,
-                    "Local": p[1].strip() if len(p) > 1 else "N/A",
-                    "Categoria": p[2].strip() if len(p) > 2 else "Geral",
-                    "Status": p[3].strip().upper() if len(p) > 3 else "ERRO",
+                    "Valor (R$)": valor,
+                    "Local": partes[1].strip() if len(partes) > 1 else "N/D",
+                    "Categoria": partes[2].strip() if len(partes) > 2 else "Geral",
+                    "Status": partes[3].strip().upper() if len(partes) > 3 else "ERRO",
                     "Modelo": m_ativo
                 })
             else:
-                st.error(f"Erro em {arq.name}: {erro_final}")
+                # Agora erro_retornado é garantido que existe aqui
+                st.error(f"Erro em {arq.name}: {erro_retornado}")
         except Exception as e:
-            st.error(f"Falha técnica: {str(e)}")
+            st.error(f"Falha técnica crítica em {arq.name}: {str(e)}")
         
         barra.progress((i + 1) / len(arquivos))
+
+    msg_status.empty()
 
     if resultados:
         df = pd.DataFrame(resultados)
         st.divider()
-        st.metric("Modelo Ativo Detectado", df['Modelo'].iloc[0])
-        st.plotly_chart(px.bar(df, x='Categoria', y='Valor (R$)', color='Status'), use_container_width=True)
-        st.dataframe(df)
+        st.metric("Modelo Utilizado com Sucesso", df['Modelo'].iloc[0])
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.plotly_chart(px.bar(df, x='Categoria', y='Valor (R$)', color='Status', 
+                                  color_discrete_map={'APROVADO':'#00cc96', 'REPROVADO':'#ef553b'}), use_container_width=True)
+        with col2:
+            st.plotly_chart(px.pie(df, names='Status', hole=0.4), use_container_width=True)
+            
+        st.dataframe(df, use_container_width=True)
+        st.download_button("📥 Exportar CSV", df.to_csv(index=False).encode('utf-8'), "auditoria.csv", "text/csv")
