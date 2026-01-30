@@ -7,7 +7,7 @@ from PIL import Image
 import io
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(page_title="Auditor Gemini 2.5", layout="wide", page_icon="🛡️")
+st.set_page_config(page_title="Auditor Fiscal Gemini 2.5", layout="wide", page_icon="🛡️")
 
 # --- LOGIN ---
 if "autenticado" not in st.session_state:
@@ -27,10 +27,9 @@ if not st.session_state["autenticado"]:
     st.stop()
 
 # --- CONFIGURAÇÃO GEMINI ---
-st.title("🛡️ Auditoria Fiscal AI")
-st.caption("Engine: Gemini 2.5 Flash (Identificado via Scanner)")
+st.title("🛡️ Auditoria Fiscal Inteligente")
+st.caption("Engine: Gemini 2.5 Flash | Status: Conectado")
 
-# Chave API via Secrets
 api_key = st.secrets.get("GEMINI_API_KEY", "")
 if not api_key:
     api_key = st.sidebar.text_input("Google API Key", type="password")
@@ -38,61 +37,62 @@ if not api_key:
 if api_key:
     genai.configure(api_key=api_key)
 else:
-    st.error("⚠️ Configure a GEMINI_API_KEY nos Secrets ou Sidebar.")
+    st.error("⚠️ API Key não configurada.")
     st.stop()
 
 with st.sidebar:
-    st.header("⚙️ Parâmetros")
+    st.header("⚙️ Regras de Compliance")
     limite = st.number_input("Limite de Reembolso (R$)", value=250.0)
     st.divider()
-    st.success("Conectado ao Gemini 2.5")
+    st.success("Modelo: Gemini 2.5 Flash")
 
-arquivos = st.file_uploader("Upload das Notas", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
+arquivos = st.file_uploader("Carregar Notas Fiscais", type=["jpg", "png", "jpeg"], accept_multiple_files=True)
 
 # --- PROCESSAMENTO ---
-if st.button("🚀 Iniciar Auditoria") and arquivos:
-    # Usando o nome exato que o seu scanner validou
-    try:
-        model = genai.GenerativeModel('gemini-2.5-flash')
-    except Exception as e:
-        st.error(f"Erro ao inicializar o modelo: {e}")
-        st.stop()
-
+if st.button("🚀 Iniciar Auditoria Completa") and arquivos:
+    model = genai.GenerativeModel('gemini-2.5-flash')
     resultados = []
     barra = st.progress(0)
     status_msg = st.empty()
 
     for i, arq in enumerate(arquivos):
-        status_msg.info(f"Analisando: {arq.name}")
+        status_msg.info(f"Analisando detalhadamente: {arq.name}")
         try:
-            # Preparar imagem para o Gemini
             img = Image.open(arq)
             
+            # PROMPT EVOLUÍDO PARA EXTRAÇÃO COMPLETA
             prompt = (
-                f"Extraia estritamente os dados desta nota no formato: VALOR|LOCAL|CATEGORIA|STATUS. "
-                f"Regra: Se valor total > {limite}, STATUS=REPROVADO, senão APROVADO. "
-                "Retorne apenas a string separada por pipe."
+                f"Analise esta imagem de nota fiscal e extraia os dados rigorosamente no formato: "
+                f"DATA|EMPRESA|VALOR|CATEGORIA|STATUS|JUSTIFICATIVA. "
+                f"Regras: "
+                f"1. Se o VALOR for maior que {limite}, o STATUS é REPROVADO. "
+                f"2. Na JUSTIFICATIVA, explique brevemente o motivo do status (ex: 'Valor acima do permitido' ou 'Gasto dentro da política'). "
+                f"3. Responda APENAS a linha com os dados separados por pipe (|)."
             )
             
-            # Chamada da API
             response = model.generate_content([prompt, img])
-            
-            # Tratamento da resposta
             texto = response.text.strip()
+            
+            # Divide a resposta em partes
             partes = texto.split('|')
             
-            if len(partes) >= 1:
-                # Limpeza numérica (substitui vírgula por ponto e remove símbolos)
-                v_str = re.sub(r'[^\d.]', '', partes[0].replace(',', '.'))
+            if len(partes) >= 6:
+                # Limpeza do Valor
+                v_str = re.sub(r'[^\d.]', '', partes[2].replace(',', '.'))
                 valor_final = float(v_str) if v_str else 0.0
                 
                 resultados.append({
-                    "Arquivo": arq.name,
+                    "Data": partes[0].strip(),
+                    "Empresa": partes[1].strip(),
                     "Valor (R$)": valor_final,
-                    "Local": partes[1].strip() if len(partes) > 1 else "N/D",
-                    "Categoria": partes[2].strip() if len(partes) > 2 else "Geral",
-                    "Status": partes[3].strip().upper() if len(partes) > 3 else "ERRO"
+                    "Categoria": partes[3].strip(),
+                    "Status": partes[4].strip().upper(),
+                    "Justificativa": partes[5].strip(),
+                    "Arquivo": arq.name
                 })
+            else:
+                st.warning(f"Formato inesperado em {arq.name}. Resposta da IA: {texto}")
+
         except Exception as e:
             st.error(f"Erro no arquivo {arq.name}: {str(e)}")
         
@@ -104,17 +104,30 @@ if st.button("🚀 Iniciar Auditoria") and arquivos:
         df = pd.DataFrame(resultados)
         st.divider()
         
-        # Dashboard
+        # --- DASHBOARD ---
+        col1, col2, col3 = st.columns([1, 1, 1])
+        with col1:
+            total_auditado = df['Valor (R$)'].sum()
+            st.metric("Total Auditado", f"R$ {total_auditado:.2f}")
+        with col2:
+            aprovados = len(df[df['Status'] == 'APROVADO'])
+            st.metric("Notas Aprovadas", aprovados)
+        with col3:
+            reprovados = len(df[df['Status'] == 'REPROVADO'])
+            st.metric("Notas Reprovadas", reprovados)
+
         c1, c2 = st.columns(2)
         with c1:
-            st.plotly_chart(px.bar(df, x='Categoria', y='Valor (R$)', color='Status',
-                                  color_discrete_map={'APROVADO':'#00cc96', 'REPROVADO':'#ef553b'}), 
-                            use_container_width=True)
+            st.plotly_chart(px.bar(df, x='Categoria', y='Valor (R$)', color='Status', 
+                                  title="Gastos por Categoria",
+                                  color_discrete_map={'APROVADO':'#00cc96', 'REPROVADO':'#ef553b'}), use_container_width=True)
         with c2:
-            st.plotly_chart(px.pie(df, names='Status', hole=0.4), use_container_width=True)
+            st.plotly_chart(px.pie(df, names='Status', title="Distribuição de Status", hole=0.4), use_container_width=True)
             
-        st.subheader("📋 Relatório Final")
-        st.dataframe(df, use_container_width=True)
+        st.subheader("📋 Relatório Detalhado de Compliance")
+        # Reordenando colunas para o relatório ficar bonito
+        df_display = df[["Data", "Empresa", "Categoria", "Valor (R$)", "Status", "Justificativa", "Arquivo"]]
+        st.dataframe(df_display, use_container_width=True)
         
-        csv = df.to_csv(index=False).encode('utf-8')
-        st.download_button("📥 Baixar CSV", csv, "auditoria_fiscal.csv", "text/csv")
+        csv = df_display.to_csv(index=False).encode('utf-8')
+        st.download_button("📥 Exportar Planilha de Auditoria", csv, "auditoria_final.csv", "text/csv")
