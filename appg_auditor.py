@@ -117,4 +117,36 @@ if st.button("🔍 Iniciar Processamento") and arquivos:
                 partes = content.split('|')
                 
                 # Limpeza de dados
-                v_str = re.sub(r'[^\d.]', '', partes
+                v_str = re.sub(r'[^\d.]', '', partes[0].replace(',', '.'))
+                valor = float(v_str) if v_str else 0.0
+                
+                resultados.append({
+                    "Arquivo": arq.name,
+                    "Valor (R$)": valor,
+                    "Local": partes[1].strip() if len(partes) > 1 else "Desconhecido",
+                    "Categoria": partes[2].strip() if len(partes) > 2 else "Geral",
+                    "Status": partes[3].strip().upper() if len(partes) > 3 else "ERRO"
+                })
+            else:
+                st.error(f"Erro no arquivo {arq.name}. Detalhes: {ultimo_erro_api}")
+        except Exception as e:
+            st.error(f"Erro inesperado: {str(e)}")
+        
+        barra.progress((i + 1) / len(arquivos))
+
+    placeholder.empty()
+
+    if resultados:
+        df = pd.DataFrame(resultados)
+        st.divider()
+        st.subheader("📊 Relatório de Auditoria")
+        
+        col1, col2 = st.columns(2)
+        with col1:
+            st.plotly_chart(px.bar(df, x='Categoria', y='Valor (R$)', color='Status', 
+                                  color_discrete_map={'APROVADO':'#00cc96', 'REPROVADO':'#ef553b'}), 
+                            use_container_width=True)
+        with col2:
+            st.plotly_chart(px.pie(df, names='Status', hole=0.4), use_container_width=True)
+            
+        st.dataframe(df, use_container_width=True)
